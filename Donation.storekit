@@ -1,0 +1,36 @@
+{
+  "identifier" : "MDDOG-DONATION-CONFIG",
+  "nonRenewingSubscriptions" : [],
+  "products" : [
+    {
+      "displayPrice" : "1.99",
+      "familyShareable" : false,
+      "internalID" : "md_dog_tip_001",
+      "localizations" : [
+        {
+          "description" : "請小狗吃一頓飯，支持 md dog 持續開發。",
+          "displayName" : "贊助小狗",
+          "locale" : "zh_TW"
+        },
+        {
+          "description" : "Buy the dog a meal and support md dog's development.",
+          "displayName" : "Tip the Dog",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "md_dog.tip",
+      "referenceName" : "Donation Tip",
+      "type" : "Consumable"
+    }
+  ],
+  "settings" : {
+    "_applicationInternalID" : "MDDOG",
+    "_developerTeamID" : "",
+    "_lastSynchronizedDate" : 0
+  },
+  "subscriptionGroups" : [],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

@@ -29,6 +29,7 @@ struct ContentView: View {
     @State private var fontFamily: FontFamily = .serif
     @State private var isShowingFontStepper = false
     @State private var isShowingSettings = false
+    @State private var isShowingDonation = false
     @State private var unorderedListColor: ListColor = .mint
     @State private var orderedListColor: ListColor = .sky
     @State private var tableColor: ListColor = .lavender
@@ -315,6 +316,12 @@ struct ContentView: View {
                         .disabled(markdownText.isEmpty)
 
                         Button {
+                            isShowingDonation = true
+                        } label: {
+                            Label("贊助支持", systemImage: "heart")
+                        }
+
+                        Button {
                             isShowingSettings = true
                         } label: {
                             Label("設定", systemImage: "gearshape")
@@ -332,6 +339,9 @@ struct ContentView: View {
             )
             .sheet(isPresented: $isShowingSettings) {
                 settingsView
+            }
+            .sheet(isPresented: $isShowingDonation) {
+                DonationView()
             }
             .alert("無法讀取檔案", isPresented: errorAlertBinding) {
                 Button("好", role: .cancel) { }
