@@ -2636,7 +2636,7 @@ struct ContentView: View {
         case .divider:
             return "<hr>"
         case .table(let table):
-            return htmlForTable(table)
+            return htmlForTable(table, id: block.id)
         case .taskList(let items):
             let rows = items.map { item -> String in
                 let box = item.isChecked ? "&#9745;" : "&#9744;"
@@ -2663,11 +2663,16 @@ struct ContentView: View {
         }
     }
 
-    private func htmlForTable(_ table: MarkdownTable) -> String {
+    private func htmlForTable(_ table: MarkdownTable, id: Int) -> String {
         let count = table.columnCount
+        let cleared = tableColorsDisabled.contains(id)
         let tint = tableColor.rgb
+        // Match the on-screen grid: cleared tables use a darker border, coloured
+        // tables use the faint default from the stylesheet.
+        let cellExtra = cleared ? "border-color: #4d4d4d;" : ""
 
         func headerStyle() -> String {
+            if cleared { return "" }
             if let tint {
                 return "background-color: rgba(\(tint.r),\(tint.g),\(tint.b),0.75);"
             }
@@ -2675,6 +2680,7 @@ struct ContentView: View {
         }
 
         func rowStyle(_ index: Int) -> String {
+            if cleared { return "" }
             if !tableStripedRows {
                 if let tint { return "background-color: rgba(\(tint.r),\(tint.g),\(tint.b),0.14);" }
                 return ""
@@ -2688,13 +2694,13 @@ struct ContentView: View {
 
         var html = "<table class=\"md-table\"><tr>"
         for column in 0..<count {
-            html += "<th style=\"\(headerStyle())\">\(inlineHTML(table.header[safe: column] ?? ""))</th>"
+            html += "<th style=\"\(cellExtra)\(headerStyle())\">\(inlineHTML(table.header[safe: column] ?? ""))</th>"
         }
         html += "</tr>"
         for (index, tableRow) in table.rows.enumerated() {
-            html += "<tr style=\"\(rowStyle(index))\">"
+            html += "<tr>"
             for column in 0..<count {
-                html += "<td>\(inlineHTML(tableRow[safe: column] ?? ""))</td>"
+                html += "<td style=\"\(cellExtra)\(rowStyle(index))\">\(inlineHTML(tableRow[safe: column] ?? ""))</td>"
             }
             html += "</tr>"
         }
