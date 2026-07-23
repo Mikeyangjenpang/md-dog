@@ -2021,7 +2021,7 @@ struct ContentView: View {
         // clipboard. Word and Excel prefer the HTML and paste it as a real
         // table; plain-text editors fall back to the TSV.
         writeTableToPasteboard(
-            html: tableClipboardHTML(table),
+            html: tableClipboardHTML(id: id, table: table),
             plain: tsvRepresentation(of: table)
         )
 
@@ -2053,23 +2053,47 @@ struct ContentView: View {
         #endif
     }
 
-    /// A self-contained HTML table with inline borders so it pastes cleanly as
-    /// a table in both word processors and spreadsheets.
-    private func tableClipboardHTML(_ table: MarkdownTable) -> String {
+    /// A self-contained HTML table that mirrors the table's on-screen state so
+    /// it pastes cleanly as a table in both word processors and spreadsheets.
+    /// When the table's background colour has been cleared ("無格式"), the copy
+    /// keeps only the borders; otherwise it reflects the current colour and
+    /// banded-row settings.
+    private func tableClipboardHTML(id: Int, table: MarkdownTable) -> String {
         let count = table.columnCount
-        let headerCellStyle = "border:1px solid #999;padding:6px 10px;background:#eeeeee;text-align:left;"
-        let cellStyle = "border:1px solid #999;padding:6px 10px;text-align:left;"
+        let cleared = tableColorsDisabled.contains(id)
+        let tint = tableColor.rgb
+        let border = cleared ? "1px solid #4d4d4d" : "1px solid rgba(128,128,128,0.35)"
+        let cellBase = "border:\(border);padding:6px 10px;text-align:left;vertical-align:top;"
+
+        func headerBackground() -> String {
+            if cleared { return "" }
+            if let tint { return "background-color:rgba(\(tint.r),\(tint.g),\(tint.b),0.75);" }
+            return "background-color:rgba(128,128,128,0.18);"
+        }
+
+        func rowBackground(_ index: Int) -> String {
+            if cleared { return "" }
+            if let tint {
+                if !tableStripedRows {
+                    return "background-color:rgba(\(tint.r),\(tint.g),\(tint.b),0.14);"
+                }
+                let alpha = index % 2 == 0 ? "0.10" : "0.22"
+                return "background-color:rgba(\(tint.r),\(tint.g),\(tint.b),\(alpha));"
+            }
+            if !tableStripedRows { return "" }
+            return index % 2 == 0 ? "" : "background-color:rgba(128,128,128,0.10);"
+        }
 
         var rows = "<tr>"
         for column in 0..<count {
-            rows += "<th style=\"\(headerCellStyle)\">\(inlineHTML(table.header[safe: column] ?? ""))</th>"
+            rows += "<th style=\"\(cellBase)font-weight:600;\(headerBackground())\">\(inlineHTML(table.header[safe: column] ?? ""))</th>"
         }
         rows += "</tr>"
 
-        for tableRow in table.rows {
+        for (index, tableRow) in table.rows.enumerated() {
             rows += "<tr>"
             for column in 0..<count {
-                rows += "<td style=\"\(cellStyle)\">\(inlineHTML(tableRow[safe: column] ?? ""))</td>"
+                rows += "<td style=\"\(cellBase)\(rowBackground(index))\">\(inlineHTML(tableRow[safe: column] ?? ""))</td>"
             }
             rows += "</tr>"
         }
