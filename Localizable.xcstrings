@@ -91,10 +91,24 @@
       }
     },
     "儲存" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save"
+          }
+        }
+      }
     },
     "儲存失敗：%@" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save failed: %@"
+          }
+        }
+      }
     },
     "分享" : {
       "localizations" : {
@@ -107,7 +121,14 @@
       }
     },
     "列印" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Print"
+          }
+        }
+      }
     },
     "前往這個網址" : {
       "localizations" : {
@@ -220,10 +241,24 @@
       }
     },
     "完成編輯" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done Editing"
+          }
+        }
+      }
     },
     "已儲存" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved"
+          }
+        }
+      }
     },
     "已複製" : {
       "localizations" : {
@@ -300,7 +335,14 @@
       }
     },
     "檔案錯誤" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "File Error"
+          }
+        }
+      }
     },
     "檸檬" : {
       "localizations" : {
@@ -468,7 +510,14 @@
       }
     },
     "編輯" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit"
+          }
+        }
+      }
     },
     "薄荷" : {
       "localizations" : {
@@ -531,13 +580,34 @@
       }
     },
     "複製為 Markdown" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy as Markdown"
+          }
+        }
+      }
     },
     "複製為試算表格式" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy as Spreadsheet"
+          }
+        }
+      }
     },
     "複製表格" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy Table"
+          }
+        }
+      }
     },
     "襯線體" : {
       "localizations" : {
