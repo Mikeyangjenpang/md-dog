@@ -579,26 +579,6 @@
         }
       }
     },
-    "複製為 Markdown" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Copy as Markdown"
-          }
-        }
-      }
-    },
-    "複製為試算表格式" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Copy as Spreadsheet"
-          }
-        }
-      }
-    },
     "複製表格" : {
       "localizations" : {
         "en" : {

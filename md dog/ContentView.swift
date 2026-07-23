@@ -1994,65 +1994,87 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .help(tableColorsDisabled.contains(id) ? "還原表格背景色" : "清除表格背景色")
 
-            Menu {
-                Button {
-                    copyTable(markdownRepresentation(of: table), tableID: id)
-                } label: {
-                    Label("複製為 Markdown", systemImage: "text.alignleft")
-                }
-                Button {
-                    copyTable(tsvRepresentation(of: table), tableID: id)
-                } label: {
-                    Label("複製為試算表格式", systemImage: "tablecells")
-                }
+            Button {
+                copyTable(id: id, table: table)
             } label: {
-                Image(systemName: copiedTableID == id ? "checkmark" : "doc.on.doc")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.secondary.opacity(0.10))
-                    .clipShape(Capsule())
-                    .contentTransition(.symbolEffect(.replace))
+                Label {
+                    Text(copiedTableID == id ? "已複製" : "複製")
+                } icon: {
+                    Image(systemName: copiedTableID == id ? "checkmark" : "doc.on.doc")
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .font(.caption2.weight(.medium))
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.secondary.opacity(0.10))
+                .clipShape(Capsule())
             }
-            .menuStyle(.button)
             .buttonStyle(.plain)
             .help("複製表格")
         }
     }
 
-    private func copyTable(_ text: String, tableID: Int) {
-        writeToClipboard(text)
+    private func copyTable(id: Int, table: MarkdownTable) {
+        // Put both a rich HTML table and a tab-separated fallback on the
+        // clipboard. Word and Excel prefer the HTML and paste it as a real
+        // table; plain-text editors fall back to the TSV.
+        writeTableToPasteboard(
+            html: tableClipboardHTML(table),
+            plain: tsvRepresentation(of: table)
+        )
 
         withAnimation(.easeInOut(duration: 0.2)) {
-            copiedTableID = tableID
+            copiedTableID = id
         }
 
         Task {
             try? await Task.sleep(for: .seconds(1.2))
             withAnimation(.easeInOut(duration: 0.2)) {
-                if copiedTableID == tableID {
+                if copiedTableID == id {
                     copiedTableID = nil
                 }
             }
         }
     }
 
-    private func markdownRepresentation(of table: MarkdownTable) -> String {
+    private func writeTableToPasteboard(html: String, plain: String) {
+        #if canImport(UIKit)
+        UIPasteboard.general.items = [[
+            "public.html": html,
+            "public.utf8-plain-text": plain
+        ]]
+        #elseif canImport(AppKit)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(html, forType: .html)
+        pasteboard.setString(plain, forType: .string)
+        #endif
+    }
+
+    /// A self-contained HTML table with inline borders so it pastes cleanly as
+    /// a table in both word processors and spreadsheets.
+    private func tableClipboardHTML(_ table: MarkdownTable) -> String {
         let count = table.columnCount
+        let headerCellStyle = "border:1px solid #999;padding:6px 10px;background:#eeeeee;text-align:left;"
+        let cellStyle = "border:1px solid #999;padding:6px 10px;text-align:left;"
 
-        func row(_ cells: [String]) -> String {
-            let padded = (0..<count).map { cells[safe: $0] ?? "" }
-            return "| " + padded.joined(separator: " | ") + " |"
+        var rows = "<tr>"
+        for column in 0..<count {
+            rows += "<th style=\"\(headerCellStyle)\">\(inlineHTML(table.header[safe: column] ?? ""))</th>"
         }
+        rows += "</tr>"
 
-        var lines: [String] = []
-        lines.append(row(table.header))
-        lines.append("| " + Array(repeating: "---", count: max(count, 1)).joined(separator: " | ") + " |")
         for tableRow in table.rows {
-            lines.append(row(tableRow))
+            rows += "<tr>"
+            for column in 0..<count {
+                rows += "<td style=\"\(cellStyle)\">\(inlineHTML(tableRow[safe: column] ?? ""))</td>"
+            }
+            rows += "</tr>"
         }
-        return lines.joined(separator: "\n")
+
+        return "<html><body><table border=\"1\" style=\"border-collapse:collapse;\">\(rows)</table></body></html>"
     }
 
     private func tsvRepresentation(of table: MarkdownTable) -> String {
