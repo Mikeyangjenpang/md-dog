@@ -2062,43 +2062,57 @@ struct ContentView: View {
         let count = table.columnCount
         let cleared = tableColorsDisabled.contains(id)
         let tint = tableColor.rgb
-        let border = cleared ? "1px solid #4d4d4d" : "1px solid rgba(128,128,128,0.35)"
-        let cellBase = "border:\(border);padding:6px 10px;text-align:left;vertical-align:top;"
+        let borderHex = cleared ? "#4d4d4d" : "#b8b8b8"
+        let cellBase = "border:1px solid \(borderHex);padding:6px 10px;text-align:left;vertical-align:top;"
 
-        func headerBackground() -> String {
-            if cleared { return "" }
-            if let tint { return "background-color:rgba(\(tint.r),\(tint.g),\(tint.b),0.75);" }
-            return "background-color:rgba(128,128,128,0.18);"
+        // Word ignores rgba() alpha, so pre-blend each tint against a white
+        // background into an opaque hex colour it will actually render.
+        func blend(_ rgb: (r: Int, g: Int, b: Int), _ alpha: Double) -> String {
+            func channel(_ component: Int) -> Int {
+                Int((Double(component) * alpha + 255 * (1 - alpha)).rounded())
+            }
+            return String(format: "#%02X%02X%02X", channel(rgb.r), channel(rgb.g), channel(rgb.b))
         }
 
-        func rowBackground(_ index: Int) -> String {
+        func headerHex() -> String {
+            if cleared { return "" }
+            if let tint { return blend(tint, 0.75) }
+            return blend((128, 128, 128), 0.18)
+        }
+
+        func rowHex(_ index: Int) -> String {
             if cleared { return "" }
             if let tint {
-                if !tableStripedRows {
-                    return "background-color:rgba(\(tint.r),\(tint.g),\(tint.b),0.14);"
-                }
-                let alpha = index % 2 == 0 ? "0.10" : "0.22"
-                return "background-color:rgba(\(tint.r),\(tint.g),\(tint.b),\(alpha));"
+                if !tableStripedRows { return blend(tint, 0.14) }
+                return index % 2 == 0 ? blend(tint, 0.10) : blend(tint, 0.22)
             }
             if !tableStripedRows { return "" }
-            return index % 2 == 0 ? "" : "background-color:rgba(128,128,128,0.10);"
+            return index % 2 == 0 ? "" : blend((128, 128, 128), 0.10)
+        }
+
+        // Emit both a `bgcolor` attribute and an inline style for the widest
+        // word-processor / spreadsheet compatibility.
+        func cell(_ tag: String, hex: String, extraStyle: String, content: String) -> String {
+            let bgAttribute = hex.isEmpty ? "" : " bgcolor=\"\(hex)\""
+            let bgStyle = hex.isEmpty ? "" : "background-color:\(hex);"
+            return "<\(tag)\(bgAttribute) style=\"\(cellBase)\(extraStyle)\(bgStyle)\">\(content)</\(tag)>"
         }
 
         var rows = "<tr>"
         for column in 0..<count {
-            rows += "<th style=\"\(cellBase)font-weight:600;\(headerBackground())\">\(inlineHTML(table.header[safe: column] ?? ""))</th>"
+            rows += cell("th", hex: headerHex(), extraStyle: "font-weight:600;", content: inlineHTML(table.header[safe: column] ?? ""))
         }
         rows += "</tr>"
 
         for (index, tableRow) in table.rows.enumerated() {
             rows += "<tr>"
             for column in 0..<count {
-                rows += "<td style=\"\(cellBase)\(rowBackground(index))\">\(inlineHTML(tableRow[safe: column] ?? ""))</td>"
+                rows += cell("td", hex: rowHex(index), extraStyle: "", content: inlineHTML(tableRow[safe: column] ?? ""))
             }
             rows += "</tr>"
         }
 
-        return "<html><body><table border=\"1\" style=\"border-collapse:collapse;\">\(rows)</table></body></html>"
+        return "<html><body><table border=\"1\" cellspacing=\"0\" style=\"border-collapse:collapse;\">\(rows)</table></body></html>"
     }
 
     private func tsvRepresentation(of table: MarkdownTable) -> String {
