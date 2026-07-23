@@ -46,14 +46,33 @@ private final class HTMLPrintCoordinator: NSObject, WKNavigationDelegate {
     static let shared = HTMLPrintCoordinator()
 
     private var webView: WKWebView?
+    private var hostWindow: NSWindow?
     private var jobName: String = ""
+
+    private static let paperSize = NSRect(x: 0, y: 0, width: 595, height: 842)
 
     func print(html: String, jobName: String) {
         self.jobName = jobName
 
-        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 595, height: 842))
+        let web = WKWebView(frame: Self.paperSize)
         web.navigationDelegate = self
+
+        // Host the web view in an off-screen window. Without a window the view
+        // never lays out, so `printOperation` has nothing to paginate and the
+        // print panel never appears.
+        let window = NSWindow(
+            contentRect: Self.paperSize,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = web
+        window.setFrameOrigin(NSPoint(x: -20_000, y: -20_000))
+        window.orderBack(nil)
+
         webView = web
+        hostWindow = window
         web.loadHTMLString(html, baseURL: nil)
     }
 
@@ -71,18 +90,39 @@ private final class HTMLPrintCoordinator: NSObject, WKNavigationDelegate {
         operation.jobTitle = jobName
         operation.showsPrintPanel = true
         operation.showsProgressPanel = true
-        operation.view?.frame = webView.bounds
-        operation.run()
+        operation.view?.frame = Self.paperSize
 
-        self.webView = nil
+        // Present as a sheet on the app's active window when possible, otherwise
+        // fall back to an app-modal print panel.
+        if let host = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0 !== hostWindow && $0.isVisible }) {
+            operation.runModal(
+                for: host,
+                delegate: self,
+                didRun: #selector(printOperationDidRun(_:success:contextInfo:)),
+                contextInfo: nil
+            )
+        } else {
+            operation.run()
+            cleanup()
+        }
+    }
+
+    @objc private func printOperationDidRun(_ operation: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?) {
+        cleanup()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        self.webView = nil
+        cleanup()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        self.webView = nil
+        cleanup()
+    }
+
+    private func cleanup() {
+        hostWindow?.orderOut(nil)
+        hostWindow = nil
+        webView = nil
     }
 }
 
