@@ -42,6 +42,10 @@ struct ContentView: View {
     @State private var fileSummary: String = ""
     @State private var loadedImageURLs: Set<String> = []
     @State private var imageActionTarget: MarkdownImage?
+    @State private var currentFileURL: URL?
+    @State private var isEditing = false
+    @State private var didJustSave = false
+    @State private var copiedTableID: Int?
     @Environment(\.openURL) private var openURL
 
     private enum CachedRegex {
@@ -123,6 +127,22 @@ struct ContentView: View {
 
         var swatchColor: Color {
             color ?? Color.white
+        }
+
+        /// 0–255 RGB components, used to reproduce the colour in printed HTML.
+        var rgb: (r: Int, g: Int, b: Int)? {
+            switch self {
+            case .none: nil
+            case .gray: (153, 153, 158)
+            case .mint: (135, 212, 184)
+            case .sky: (148, 201, 237)
+            case .lavender: (189, 179, 235)
+            case .peach: (252, 201, 168)
+            case .rose: (245, 184, 199)
+            case .lemon: (250, 235, 153)
+            case .sage: (184, 214, 168)
+            case .coral: (250, 168, 153)
+            }
         }
     }
 
@@ -260,7 +280,9 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if markdownText.isEmpty {
+                if isEditing {
+                    editorView
+                } else if markdownText.isEmpty {
                     emptyState
                 } else {
                     reader
@@ -296,6 +318,29 @@ struct ContentView: View {
                 }
 
                 ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        toggleEditing()
+                    } label: {
+                        Label(isEditing ? "完成編輯" : "編輯",
+                              systemImage: isEditing ? "checkmark.circle" : "square.and.pencil")
+                    }
+                    .disabled(markdownText.isEmpty)
+                }
+
+                if isEditing {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            saveMarkdownToFile()
+                        } label: {
+                            Label(didJustSave ? "已儲存" : "儲存",
+                                  systemImage: didJustSave ? "checkmark" : "square.and.arrow.down")
+                                .contentTransition(.symbolEffect(.replace))
+                        }
+                        .disabled(currentFileURL == nil)
+                    }
+                }
+
+                ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Picker("外觀模式", selection: $appearanceMode) {
                             ForEach(AppearanceMode.allCases) { mode in
@@ -312,6 +357,13 @@ struct ContentView: View {
                             preview: SharePreview(selectedFileName)
                         ) {
                             Label("分享", systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(markdownText.isEmpty)
+
+                        Button {
+                            printDocument()
+                        } label: {
+                            Label("列印", systemImage: "printer")
                         }
                         .disabled(markdownText.isEmpty)
 
@@ -343,7 +395,7 @@ struct ContentView: View {
             .sheet(isPresented: $isShowingDonation) {
                 DonationView()
             }
-            .alert("無法讀取檔案", isPresented: errorAlertBinding) {
+            .alert("檔案錯誤", isPresented: errorAlertBinding) {
                 Button("好", role: .cancel) { }
             } message: {
                 Text(errorMessage ?? "請確認檔案可讀取後再試一次。")
@@ -376,6 +428,9 @@ struct ContentView: View {
             }
             .onAppear(perform: loadBundledReadmeIfAvailable)
             .onChange(of: markdownText) { _, newValue in
+                // While editing, defer the (relatively heavy) re-parse until the
+                // user finishes so typing stays responsive.
+                guard !isEditing else { return }
                 refreshDerivedContent(for: newValue)
             }
         }
@@ -384,7 +439,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var bottomViewModeBar: some View {
-        if !markdownText.isEmpty {
+        if !markdownText.isEmpty && !isEditing {
             Picker("閱讀模式", selection: $viewMode) {
                 ForEach(ViewMode.allCases) { mode in
                     Text(LocalizedStringKey(mode.rawValue)).tag(mode)
@@ -686,6 +741,57 @@ struct ContentView: View {
         }
     }
 
+    private var editorView: some View {
+        TextEditor(text: $markdownText)
+            .font(.system(size: textSize, design: .monospaced))
+            .lineSpacing(textSize * 0.25)
+            .scrollContentBackground(.hidden)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            #if os(iOS)
+            .autocorrectionDisabled(true)
+            .textInputAutocapitalization(.never)
+            #endif
+    }
+
+    private func toggleEditing() {
+        // When leaving edit mode, refresh the parsed preview content that we
+        // deliberately skipped updating while the user was typing.
+        if isEditing {
+            refreshDerivedContent(for: markdownText)
+        }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            isEditing.toggle()
+        }
+    }
+
+    private func saveMarkdownToFile() {
+        guard let url = currentFileURL else { return }
+
+        let didAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            try Data(markdownText.utf8).write(to: url, options: .atomic)
+            withAnimation(.easeInOut(duration: 0.2)) {
+                didJustSave = true
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(1.2))
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    didJustSave = false
+                }
+            }
+        } catch {
+            errorMessage = String(localized: "儲存失敗：\(error.localizedDescription)")
+        }
+    }
+
     private func computeFileSummary(from text: String) -> String {
         guard !text.isEmpty else {
             return String(localized: "輕量 Markdown 閱讀器")
@@ -770,6 +876,9 @@ struct ContentView: View {
         do {
             guard let url = try result.get().first else { return }
             try loadMarkdownFile(from: url)
+            // Remember the user-selected file so edits can be saved back to it.
+            currentFileURL = url
+            isEditing = false
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -782,6 +891,9 @@ struct ContentView: View {
 
         do {
             try loadMarkdownFile(from: url)
+            // The bundled sample lives inside the read-only app bundle, so it
+            // cannot be saved back to.
+            currentFileURL = nil
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1327,7 +1439,7 @@ struct ContentView: View {
                 .padding(.bottom, 8)
             }
 
-            tableControls(for: id, columnWidth: columnWidth)
+            tableControls(for: id, columnWidth: columnWidth, table: table)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1860,7 +1972,7 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func tableControls(for id: Int, columnWidth: Double) -> some View {
+    private func tableControls(for id: Int, columnWidth: Double, table: MarkdownTable) -> some View {
         HStack(spacing: 8) {
             tableResizeHandle(for: id, columnWidth: columnWidth)
 
@@ -1881,7 +1993,80 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .help(tableColorsDisabled.contains(id) ? "還原表格背景色" : "清除表格背景色")
+
+            Menu {
+                Button {
+                    copyTable(markdownRepresentation(of: table), tableID: id)
+                } label: {
+                    Label("複製為 Markdown", systemImage: "text.alignleft")
+                }
+                Button {
+                    copyTable(tsvRepresentation(of: table), tableID: id)
+                } label: {
+                    Label("複製為試算表格式", systemImage: "tablecells")
+                }
+            } label: {
+                Image(systemName: copiedTableID == id ? "checkmark" : "doc.on.doc")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.secondary.opacity(0.10))
+                    .clipShape(Capsule())
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .help("複製表格")
         }
+    }
+
+    private func copyTable(_ text: String, tableID: Int) {
+        writeToClipboard(text)
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            copiedTableID = tableID
+        }
+
+        Task {
+            try? await Task.sleep(for: .seconds(1.2))
+            withAnimation(.easeInOut(duration: 0.2)) {
+                if copiedTableID == tableID {
+                    copiedTableID = nil
+                }
+            }
+        }
+    }
+
+    private func markdownRepresentation(of table: MarkdownTable) -> String {
+        let count = table.columnCount
+
+        func row(_ cells: [String]) -> String {
+            let padded = (0..<count).map { cells[safe: $0] ?? "" }
+            return "| " + padded.joined(separator: " | ") + " |"
+        }
+
+        var lines: [String] = []
+        lines.append(row(table.header))
+        lines.append("| " + Array(repeating: "---", count: max(count, 1)).joined(separator: " | ") + " |")
+        for tableRow in table.rows {
+            lines.append(row(tableRow))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func tsvRepresentation(of table: MarkdownTable) -> String {
+        let count = table.columnCount
+
+        func row(_ cells: [String]) -> String {
+            (0..<count).map { cells[safe: $0] ?? "" }.joined(separator: "\t")
+        }
+
+        var lines: [String] = [row(table.header)]
+        for tableRow in table.rows {
+            lines.append(row(tableRow))
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func tableResizeHandle(for id: Int, columnWidth: Double) -> some View {
@@ -2348,6 +2533,224 @@ struct ContentView: View {
         return trimmedLine
             .split(separator: "|", omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    // MARK: - Formatted printing
+
+    private func printDocument() {
+        let name = selectedFileName.isEmpty ? "Markdown" : selectedFileName
+        printHTMLDocument(makePrintHTML(), jobName: name)
+    }
+
+    /// Builds a self-contained HTML document that mirrors the preview layout so
+    /// the printed output keeps headings, lists, tables, code blocks and colours.
+    private func makePrintHTML() -> String {
+        let body = markdownBlocks.map { htmlForBlock($0) }.joined(separator: "\n")
+        return """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>\(printCSS())</style>
+        </head>
+        <body>
+        \(body)
+        </body>
+        </html>
+        """
+    }
+
+    private func htmlForBlock(_ block: MarkdownBlock) -> String {
+        switch block.content {
+        case .text(let text):
+            let lines = text.components(separatedBy: "\n").map { inlineHTML($0) }
+            return "<p>" + lines.joined(separator: "<br>") + "</p>"
+        case .heading(let heading):
+            let level = min(max(heading.level, 1), 6)
+            return "<h\(level)>\(inlineHTML(heading.text))</h\(level)>"
+        case .code(let codeBlock):
+            let language = codeBlock.language?.uppercased() ?? ""
+            let languageTag = language.isEmpty ? "" : "<div class=\"code-lang\">\(htmlEscape(language))</div>"
+            return "<div class=\"code-wrap\">\(languageTag)<pre><code>\(htmlEscape(codeBlock.code))</code></pre></div>"
+        case .divider:
+            return "<hr>"
+        case .table(let table):
+            return htmlForTable(table)
+        case .taskList(let items):
+            let rows = items.map { item -> String in
+                let box = item.isChecked ? "&#9745;" : "&#9744;"
+                let itemClass = item.isChecked ? " class=\"done\"" : ""
+                return "<li\(itemClass)><span class=\"task-box\">\(box)</span> \(inlineHTML(item.text))</li>"
+            }.joined()
+            return "<ul class=\"tasks\">\(rows)</ul>"
+        case .bulletList(let items):
+            let rows = items.map { item in
+                "<li style=\"margin-left:\(item.indent * 20)px\">\(inlineHTML(item.text))</li>"
+            }.joined()
+            return "<ul class=\"bullet\">\(rows)</ul>"
+        case .orderedList(let items):
+            let rows = items.map { item in
+                "<li style=\"margin-left:\(item.indent * 20)px\"><span class=\"num\">\(item.number).</span> \(inlineHTML(item.text))</li>"
+            }.joined()
+            return "<ul class=\"ordered\">\(rows)</ul>"
+        case .blockQuote(let quote):
+            let lines = quote.components(separatedBy: "\n").map { inlineHTML($0) }
+            return "<blockquote>" + lines.joined(separator: "<br>") + "</blockquote>"
+        case .image(let image):
+            let alt = image.altText.isEmpty ? String(localized: "圖片附件") : image.altText
+            return "<div class=\"image-card\"><div class=\"image-title\">\(htmlEscape(alt))</div><div class=\"image-url\">\(htmlEscape(image.urlString))</div></div>"
+        }
+    }
+
+    private func htmlForTable(_ table: MarkdownTable) -> String {
+        let count = table.columnCount
+        let tint = tableColor.rgb
+
+        func headerStyle() -> String {
+            if let tint {
+                return "background-color: rgba(\(tint.r),\(tint.g),\(tint.b),0.75);"
+            }
+            return "background-color: rgba(128,128,128,0.18);"
+        }
+
+        func rowStyle(_ index: Int) -> String {
+            if !tableStripedRows {
+                if let tint { return "background-color: rgba(\(tint.r),\(tint.g),\(tint.b),0.14);" }
+                return ""
+            }
+            if let tint {
+                let alpha = index % 2 == 0 ? "0.10" : "0.22"
+                return "background-color: rgba(\(tint.r),\(tint.g),\(tint.b),\(alpha));"
+            }
+            return index % 2 == 0 ? "" : "background-color: rgba(128,128,128,0.08);"
+        }
+
+        var html = "<table class=\"md-table\"><tr>"
+        for column in 0..<count {
+            html += "<th style=\"\(headerStyle())\">\(inlineHTML(table.header[safe: column] ?? ""))</th>"
+        }
+        html += "</tr>"
+        for (index, tableRow) in table.rows.enumerated() {
+            html += "<tr style=\"\(rowStyle(index))\">"
+            for column in 0..<count {
+                html += "<td>\(inlineHTML(tableRow[safe: column] ?? ""))</td>"
+            }
+            html += "</tr>"
+        }
+        html += "</table>"
+        return html
+    }
+
+    private func htmlEscape(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    /// Converts a single line of inline Markdown to HTML. The text is escaped
+    /// first, then the common inline syntaxes are substituted for HTML tags.
+    private func inlineHTML(_ text: String) -> String {
+        var result = htmlEscape(text)
+        result = replacingMatches(in: result, pattern: #"\[([^\]]*)\]\(([^)\s]+)\)"#) { groups in
+            "<a href=\"\(groups[2])\">\(groups[1])</a>"
+        }
+        result = replacingMatches(in: result, pattern: "`([^`]+)`") { groups in "<code>\(groups[1])</code>" }
+        result = replacingMatches(in: result, pattern: #"\*\*([^*]+)\*\*"#) { groups in "<strong>\(groups[1])</strong>" }
+        result = replacingMatches(in: result, pattern: #"\*([^*]+)\*"#) { groups in "<em>\(groups[1])</em>" }
+        result = replacingMatches(in: result, pattern: "~~([^~]+)~~") { groups in "<del>\(groups[1])</del>" }
+        result = replacingMatches(in: result, pattern: "==([^=]+)==") { groups in "<mark>\(groups[1])</mark>" }
+        result = replacingMatches(in: result, pattern: #"\^([^\s^]+)\^"#) { groups in "<sup>\(groups[1])</sup>" }
+        result = replacingMatches(in: result, pattern: #"~([^\s~]+)~"#) { groups in "<sub>\(groups[1])</sub>" }
+        return result
+    }
+
+    private func replacingMatches(
+        in text: String,
+        pattern: String,
+        transform: ([String]) -> String
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let ns = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return text }
+
+        var result = ""
+        var cursor = 0
+        for match in matches {
+            if match.range.location > cursor {
+                result += ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+            }
+            var groups: [String] = []
+            for group in 0..<match.numberOfRanges {
+                let range = match.range(at: group)
+                groups.append(range.location == NSNotFound ? "" : ns.substring(with: range))
+            }
+            result += transform(groups)
+            cursor = match.range.location + match.range.length
+        }
+        if cursor < ns.length {
+            result += ns.substring(with: NSRange(location: cursor, length: ns.length - cursor))
+        }
+        return result
+    }
+
+    private func printCSS() -> String {
+        let family = fontFamily == .serif
+            ? "Georgia, 'Times New Roman', 'Songti TC', serif"
+            : "-apple-system, 'PingFang TC', 'Helvetica Neue', Arial, sans-serif"
+        let base = Int(textSize)
+        let bulletTint = unorderedListColor.rgb
+        let orderedTint = orderedListColor.rgb
+
+        func boxBackground(_ tint: (r: Int, g: Int, b: Int)?) -> String {
+            guard let tint else { return "transparent" }
+            return "rgba(\(tint.r),\(tint.g),\(tint.b),0.10)"
+        }
+        func boxBorder(_ tint: (r: Int, g: Int, b: Int)?) -> String {
+            guard let tint else { return "rgba(0,0,0,0.08)" }
+            return "rgba(\(tint.r),\(tint.g),\(tint.b),0.35)"
+        }
+
+        return """
+        * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        body { font-family: \(family); font-size: \(base)px; line-height: 1.55; color: #1b1b1b; margin: 0; }
+        p { margin: 0.6em 0; }
+        h1,h2,h3,h4,h5,h6 { font-family: \(family); line-height: 1.25; margin: 0.8em 0 0.4em; }
+        h1 { font-size: \(base * 2)px; border-bottom: 1.5px solid rgba(0,0,0,0.25); padding-bottom: 0.15em; }
+        h2 { font-size: \(Int(Double(base) * 1.6))px; border-bottom: 1px solid rgba(0,0,0,0.15); padding-bottom: 0.1em; }
+        h3 { font-size: \(Int(Double(base) * 1.35))px; }
+        h4 { font-size: \(Int(Double(base) * 1.18))px; }
+        h5 { font-size: \(Int(Double(base) * 1.05))px; }
+        h6 { font-size: \(base)px; color: #666; }
+        a { color: #1a66cc; }
+        code { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 0.92em; background: rgba(0,0,0,0.06); padding: 0.1em 0.3em; border-radius: 4px; }
+        mark { background: rgba(255,224,0,0.55); }
+        del { color: #c0392b; }
+        hr { border: none; border-top: 1px solid rgba(0,0,0,0.25); margin: 1em 0; }
+        blockquote { margin: 0.8em 0; padding: 0.4em 1em; border-left: 3px solid rgba(0,0,0,0.3); color: #333; font-style: italic; }
+        .code-wrap { background: #14181f; border-radius: 8px; overflow: hidden; margin: 0.8em 0; }
+        .code-lang { color: #9fd6ff; font: 600 0.75em 'SF Mono', Menlo, monospace; padding: 6px 12px; background: rgba(255,255,255,0.06); }
+        pre { margin: 0; padding: 12px; }
+        pre code { display: block; background: none; padding: 0; color: #dbeaff; font-size: 0.88em; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+        ul.bullet, ul.ordered, ul.tasks { list-style: none; margin: 0.7em 0; padding: 12px 18px; border-radius: 12px; }
+        ul.bullet { background: \(boxBackground(bulletTint)); border: 1px solid \(boxBorder(bulletTint)); }
+        ul.ordered { background: \(boxBackground(orderedTint)); border: 1px solid \(boxBorder(orderedTint)); }
+        ul.bullet li { position: relative; padding-left: 1.1em; margin: 0.25em 0; }
+        ul.bullet li::before { content: "\\2022"; position: absolute; left: 0; }
+        ul.ordered li { margin: 0.25em 0; }
+        ul.ordered .num { font-weight: 600; margin-right: 0.4em; }
+        ul.tasks { background: #fefadb; border: 1px solid rgba(0,0,0,0.1); padding-left: 22px; }
+        ul.tasks li { margin: 0.3em 0; border-bottom: 0.7px solid rgba(60,100,200,0.35); padding-bottom: 0.3em; }
+        ul.tasks li.done { color: #666; text-decoration: line-through; }
+        .task-box { margin-right: 0.4em; }
+        table.md-table { border-collapse: collapse; margin: 0.9em 0; }
+        table.md-table th, table.md-table td { border: 1px solid rgba(0,0,0,0.18); padding: 8px 12px; text-align: left; vertical-align: top; }
+        .image-card { border: 1px solid rgba(0,0,0,0.25); border-radius: 10px; padding: 10px 14px; margin: 0.8em 0; }
+        .image-title { font-weight: 600; }
+        .image-url { font-family: monospace; font-size: 0.8em; color: #666; word-break: break-all; }
+        """
     }
 }
 
