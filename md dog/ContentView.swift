@@ -2631,8 +2631,9 @@ struct ContentView: View {
             return "<h\(level)>\(inlineHTML(heading.text))</h\(level)>"
         case .code(let codeBlock):
             let language = codeBlock.language?.uppercased() ?? ""
-            let languageTag = language.isEmpty ? "" : "<div class=\"code-lang\">\(htmlEscape(language))</div>"
-            return "<div class=\"code-wrap\">\(languageTag)<pre><code>\(htmlEscape(codeBlock.code))</code></pre></div>"
+            let languageTag = language.isEmpty ? "" : "<span class=\"code-lang\">\(htmlEscape(language))</span>"
+            let head = "<div class=\"code-head\"><span class=\"dots\">○ ○ ○</span>\(languageTag)</div>"
+            return "<div class=\"code-wrap\">\(head)<pre><code>\(htmlEscape(codeBlock.code))</code></pre></div>"
         case .divider:
             return "<hr>"
         case .table(let table):
@@ -2796,10 +2797,11 @@ struct ContentView: View {
         del { color: #c0392b; }
         hr { border: none; border-top: 1px solid rgba(0,0,0,0.25); margin: 1em 0; }
         blockquote { margin: 0.8em 0; padding: 0.4em 1em; border-left: 3px solid rgba(0,0,0,0.3); color: #333; font-style: italic; }
-        .code-wrap { background: #14181f; border-radius: 8px; overflow: hidden; margin: 0.8em 0; }
-        .code-lang { color: #9fd6ff; font: 600 0.75em 'SF Mono', Menlo, monospace; padding: 6px 12px; background: rgba(255,255,255,0.06); }
+        .code-wrap { background: #ffffff; border: 1.5px solid #333333; border-radius: 6px; overflow: hidden; margin: 0.9em 0; }
+        .code-head { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 0.78em; letter-spacing: 3px; color: #333333; padding: 5px 12px; border-bottom: 1px dashed #333333; }
+        .code-head .code-lang { float: right; letter-spacing: 1px; font-weight: 700; }
         pre { margin: 0; padding: 12px; }
-        pre code { display: block; background: none; padding: 0; color: #dbeaff; font-size: 0.88em; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+        pre code { display: block; background: none; padding: 0; color: #111111; font-size: 0.88em; line-height: 1.5; white-space: pre-wrap; word-break: break-word; font-family: 'SF Mono', Menlo, Consolas, 'Courier New', monospace; }
         ul.bullet, ul.ordered, ul.tasks { list-style: none; margin: 0.7em 0; padding: 12px 18px; border-radius: 12px; }
         ul.bullet { background: \(boxBackground(bulletTint)); border: 1px solid \(boxBorder(bulletTint)); }
         ul.ordered { background: \(boxBackground(orderedTint)); border: 1px solid \(boxBorder(orderedTint)); }
