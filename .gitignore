@@ -10,6 +10,9 @@ xcuserdata/
 .build/
 .swiftpm/
 
+# Isolated agent worktrees
+.worktrees/
+
 # macOS
 .DS_Store
 
