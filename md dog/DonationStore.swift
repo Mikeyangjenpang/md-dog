@@ -37,6 +37,28 @@ final class DonationStore {
     private(set) var loadState: LoadState = .loading
     var purchaseState: PurchaseState = .idle
 
+    /// Long-lived task that finishes transactions arriving outside the direct
+    /// purchase flow (e.g. Ask-to-Buy approvals or interrupted purchases that
+    /// complete later), so they don't linger in the payment queue.
+    // Cancelling a Task is thread-safe, and this handle is only written in
+    // `init` and read in `deinit` (when no other reference survives), so the
+    // unchecked access is safe.
+    nonisolated(unsafe) private var updatesTask: Task<Void, Never>?
+
+    init() {
+        updatesTask = Task { [weak self] in
+            for await update in Transaction.updates {
+                guard case .verified(let transaction) = update else { continue }
+                await transaction.finish()
+                self?.purchaseState = .thanks
+            }
+        }
+    }
+
+    deinit {
+        updatesTask?.cancel()
+    }
+
     /// Loads the donation product from the App Store.
     func loadProduct() async {
         loadState = .loading

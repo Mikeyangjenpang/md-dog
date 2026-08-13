@@ -46,6 +46,11 @@ struct ContentView: View {
     @State private var isEditing = false
     @State private var didJustSave = false
     @State private var copiedTableID: Int?
+    // Tracks the top-most visible block in the preview so entering the editor
+    // can jump to the matching position in the raw source.
+    @State private var topVisibleBlockID: Int?
+    @State private var editorScrollRequest: EditorScrollRequest?
+    @State private var editorScrollToken: Int = 0
     @Environment(\.openURL) private var openURL
 
     private enum CachedRegex {
@@ -195,6 +200,8 @@ struct ContentView: View {
 
     private struct MarkdownBlock: Identifiable {
         let id: Int
+        /// Zero-based index of the line in the raw source where this block begins.
+        let sourceLine: Int
         let content: MarkdownBlockContent
     }
 
@@ -711,6 +718,7 @@ struct ContentView: View {
                         .textSelection(.enabled)
                 }
             }
+            .scrollTargetLayout()
             .foregroundStyle(.primary)
             .frame(maxWidth: 820, alignment: .leading)
             .padding(.horizontal, 24)
@@ -726,6 +734,7 @@ struct ContentView: View {
                 }
             )
         }
+        .scrollPosition(id: $topVisibleBlockID, anchor: .top)
         .scrollContentBackground(.hidden)
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentOffset.y
@@ -742,28 +751,60 @@ struct ContentView: View {
     }
 
     private var editorView: some View {
-        TextEditor(text: $markdownText)
-            .font(.system(size: textSize, design: .monospaced))
-            .lineSpacing(textSize * 0.25)
-            .scrollContentBackground(.hidden)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            #if os(iOS)
-            .autocorrectionDisabled(true)
-            .textInputAutocapitalization(.never)
-            #endif
+        MarkdownSourceEditor(
+            text: $markdownText,
+            fontSize: textSize,
+            scrollRequest: editorScrollRequest
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func toggleEditing() {
-        // When leaving edit mode, refresh the parsed preview content that we
-        // deliberately skipped updating while the user was typing.
         if isEditing {
+            // When leaving edit mode, refresh the parsed preview content that we
+            // deliberately skipped updating while the user was typing.
             refreshDerivedContent(for: markdownText)
+        } else {
+            // When entering edit mode, scroll the source editor to the same
+            // spot the reader is currently showing.
+            prepareEditorScroll()
         }
         withAnimation(.easeInOut(duration: 0.2)) {
             isEditing.toggle()
         }
+    }
+
+    /// Builds a scroll request that lines the source editor up with the reader's
+    /// current top-most block. Always emits a fresh request (falling back to the
+    /// top of the document) so a stale request from a previous session can't
+    /// replay when the editor is recreated.
+    private func prepareEditorScroll() {
+        let characterIndex: Int
+        if let id = topVisibleBlockID,
+           let block = markdownBlocks.first(where: { $0.id == id }) {
+            characterIndex = characterOffset(forLine: block.sourceLine, in: markdownText)
+        } else {
+            characterIndex = 0
+        }
+        editorScrollToken += 1
+        editorScrollRequest = EditorScrollRequest(characterIndex: characterIndex, token: editorScrollToken)
+    }
+
+    /// Returns the UTF-16 offset of the first character of `line` (zero-based),
+    /// which is what the platform text views use for range-based scrolling.
+    private func characterOffset(forLine line: Int, in text: String) -> Int {
+        guard line > 0 else { return 0 }
+        let ns = text as NSString
+        var currentLine = 0
+        var index = 0
+        while index < ns.length {
+            if currentLine == line { break }
+            if ns.character(at: index) == 10 { // "\n"
+                currentLine += 1
+            }
+            index += 1
+        }
+        return index
     }
 
     private func saveMarkdownToFile() {
@@ -781,7 +822,7 @@ struct ContentView: View {
             withAnimation(.easeInOut(duration: 0.2)) {
                 didJustSave = true
             }
-            Task {
+            Task { @MainActor in
                 try? await Task.sleep(for: .seconds(1.2))
                 withAnimation(.easeInOut(duration: 0.2)) {
                     didJustSave = false
@@ -853,7 +894,7 @@ struct ContentView: View {
             copiedCodeBlockID = blockID
         }
 
-        Task {
+        Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.2))
             withAnimation(.easeInOut(duration: 0.2)) {
                 if copiedCodeBlockID == blockID {
@@ -1127,8 +1168,13 @@ struct ContentView: View {
 
     private func brightColor(for key: String) -> Color {
         let palette: [Color] = [.red, .orange, .green, .mint, .teal, .cyan, .blue, .indigo, .purple, .pink]
-        let hash = abs(key.hashValue)
-        return palette[hash % palette.count]
+        // Swift's `String.hashValue` is seeded per launch, so the same tag would
+        // change colour every run. Use a stable, deterministic hash instead.
+        var hash: UInt64 = 5381
+        for scalar in key.unicodeScalars {
+            hash = (hash &* 33) &+ UInt64(scalar.value)
+        }
+        return palette[Int(hash % UInt64(palette.count))]
     }
 
     private func splitByBaseline(_ text: String) -> [BaselineSegment] {
@@ -2029,7 +2075,7 @@ struct ContentView: View {
             copiedTableID = id
         }
 
-        Task {
+        Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.2))
             withAnimation(.easeInOut(duration: 0.2)) {
                 if copiedTableID == id {
@@ -2247,12 +2293,13 @@ struct ContentView: View {
         let lines = markdown.components(separatedBy: .newlines)
         var blocks: [MarkdownBlock] = []
         var textBuffer: [String] = []
+        var textBufferStart = 0
         var index = 0
 
         func flushTextBuffer() {
             let text = textBuffer.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
-                blocks.append(MarkdownBlock(id: blocks.count, content: .text(text)))
+                blocks.append(MarkdownBlock(id: blocks.count, sourceLine: textBufferStart, content: .text(text)))
             }
             textBuffer.removeAll()
         }
@@ -2264,6 +2311,7 @@ struct ContentView: View {
             if trimmedLine.hasPrefix("```") {
                 flushTextBuffer()
 
+                let startLine = index
                 let language = parseCodeFenceLanguage(from: trimmedLine)
                 index += 1
 
@@ -2284,6 +2332,7 @@ struct ContentView: View {
                 blocks.append(
                     MarkdownBlock(
                         id: blocks.count,
+                        sourceLine: startLine,
                         content: .code(MarkdownCodeBlock(language: language, code: codeLines.joined(separator: "\n")))
                     )
                 )
@@ -2292,7 +2341,7 @@ struct ContentView: View {
 
             if let dividerStyle = horizontalRuleStyle(trimmedLine) {
                 flushTextBuffer()
-                blocks.append(MarkdownBlock(id: blocks.count, content: .divider(dividerStyle)))
+                blocks.append(MarkdownBlock(id: blocks.count, sourceLine: index, content: .divider(dividerStyle)))
                 index += 1
                 continue
             }
@@ -2302,6 +2351,7 @@ struct ContentView: View {
                isTableSeparator(lines[index + 1]) {
                 flushTextBuffer()
 
+                let startLine = index
                 let header = parseTableCells(line)
                 index += 2
 
@@ -2311,13 +2361,14 @@ struct ContentView: View {
                     index += 1
                 }
 
-                blocks.append(MarkdownBlock(id: blocks.count, content: .table(MarkdownTable(header: header, rows: rows))))
+                blocks.append(MarkdownBlock(id: blocks.count, sourceLine: startLine, content: .table(MarkdownTable(header: header, rows: rows))))
                 continue
             }
 
             if trimmedLine.hasPrefix(">") {
                 flushTextBuffer()
 
+                let startLine = index
                 var quoteLines: [String] = []
                 while index < lines.count {
                     let l = lines[index].trimmingCharacters(in: .whitespaces)
@@ -2328,19 +2379,20 @@ struct ContentView: View {
                 }
 
                 let quoteText = quoteLines.joined(separator: "\n")
-                blocks.append(MarkdownBlock(id: blocks.count, content: .blockQuote(quoteText)))
+                blocks.append(MarkdownBlock(id: blocks.count, sourceLine: startLine, content: .blockQuote(quoteText)))
                 continue
             }
 
             if let heading = parseHeading(from: trimmedLine) {
                 flushTextBuffer()
-                blocks.append(MarkdownBlock(id: blocks.count, content: .heading(heading)))
+                blocks.append(MarkdownBlock(id: blocks.count, sourceLine: index, content: .heading(heading)))
                 index += 1
                 continue
             }
 
             if let task = parseTaskItem(from: trimmedLine) {
                 flushTextBuffer()
+                let startLine = index
                 var items: [MarkdownTaskItem] = [task]
                 index += 1
                 while index < lines.count,
@@ -2348,43 +2400,49 @@ struct ContentView: View {
                     items.append(next)
                     index += 1
                 }
-                blocks.append(MarkdownBlock(id: blocks.count, content: .taskList(items)))
+                blocks.append(MarkdownBlock(id: blocks.count, sourceLine: startLine, content: .taskList(items)))
                 continue
             }
 
             if let bullet = parseBulletItem(from: line) {
                 flushTextBuffer()
+                let startLine = index
                 var items: [MarkdownBulletItem] = [bullet]
                 index += 1
                 while index < lines.count,
+                      horizontalRuleStyle(lines[index].trimmingCharacters(in: .whitespaces)) == nil,
                       parseTaskItem(from: lines[index].trimmingCharacters(in: .whitespaces)) == nil,
                       let next = parseBulletItem(from: lines[index]) {
                     items.append(next)
                     index += 1
                 }
-                blocks.append(MarkdownBlock(id: blocks.count, content: .bulletList(items)))
+                blocks.append(MarkdownBlock(id: blocks.count, sourceLine: startLine, content: .bulletList(items)))
                 continue
             }
 
             if let ordered = parseOrderedItem(from: line) {
                 flushTextBuffer()
+                let startLine = index
                 var items: [MarkdownOrderedItem] = [ordered]
                 index += 1
                 while index < lines.count, let next = parseOrderedItem(from: lines[index]) {
                     items.append(next)
                     index += 1
                 }
-                blocks.append(MarkdownBlock(id: blocks.count, content: .orderedList(items)))
+                blocks.append(MarkdownBlock(id: blocks.count, sourceLine: startLine, content: .orderedList(items)))
                 continue
             }
 
             if let image = parseImageLine(from: trimmedLine) {
                 flushTextBuffer()
-                blocks.append(MarkdownBlock(id: blocks.count, content: .image(image)))
+                blocks.append(MarkdownBlock(id: blocks.count, sourceLine: index, content: .image(image)))
                 index += 1
                 continue
             }
 
+            if textBuffer.isEmpty {
+                textBufferStart = index
+            }
             textBuffer.append(line)
             index += 1
         }
@@ -2598,6 +2656,12 @@ struct ContentView: View {
     // MARK: - Formatted printing
 
     private func printDocument() {
+        // While editing we deliberately skip re-parsing on every keystroke, so
+        // the cached blocks can be stale. Refresh from the live text first so
+        // the printout matches what the user currently sees / typed.
+        if isEditing {
+            refreshDerivedContent(for: markdownText)
+        }
         let name = selectedFileName.isEmpty ? "Markdown" : selectedFileName
         printHTMLDocument(makePrintHTML(), jobName: name)
     }
@@ -2827,6 +2891,163 @@ private extension Array {
         indices.contains(index) ? self[index] : nil
     }
 }
+
+// MARK: - Scrollable source editor
+
+/// A request to scroll the source editor so a given character offset sits at the
+/// top. The `token` lets an identical offset re-trigger a scroll, and prevents a
+/// stale request from replaying when the editor view is recreated.
+private struct EditorScrollRequest: Equatable {
+    var characterIndex: Int
+    var token: Int
+}
+
+/// A plain-text Markdown source editor backed by the platform text view. Unlike
+/// SwiftUI's `TextEditor`, this can be programmatically scrolled to an arbitrary
+/// character offset so the editor can mirror the reader's scroll position.
+#if os(iOS)
+private struct MarkdownSourceEditor: UIViewRepresentable {
+    @Binding var text: String
+    var fontSize: Double
+    var scrollRequest: EditorScrollRequest?
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.delegate = context.coordinator
+        textView.backgroundColor = .clear
+        textView.textContainerInset = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        textView.autocapitalizationType = .none
+        textView.autocorrectionType = .no
+        textView.smartQuotesType = .no
+        textView.smartDashesType = .no
+        textView.spellCheckingType = .no
+        textView.alwaysBounceVertical = true
+        textView.keyboardDismissMode = .interactive
+        textView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        textView.text = text
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        if textView.text != text {
+            textView.text = text
+        }
+        let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        if textView.font != font {
+            textView.font = font
+        }
+        applyScroll(to: textView, coordinator: context.coordinator)
+    }
+
+    private func applyScroll(to textView: UITextView, coordinator: Coordinator) {
+        guard let request = scrollRequest, coordinator.lastToken != request.token else { return }
+        coordinator.lastToken = request.token
+        let index = request.characterIndex
+        // Defer to the next runloop so the text has laid out and the view has
+        // its final bounds before we compute the target offset.
+        DispatchQueue.main.async {
+            let ns = textView.text as NSString
+            let safe = max(0, min(index, ns.length))
+            textView.layoutManager.ensureLayout(for: textView.textContainer)
+            let glyphRange = textView.layoutManager.glyphRange(
+                forCharacterRange: NSRange(location: safe, length: 0),
+                actualCharacterRange: nil
+            )
+            var rect = textView.layoutManager.boundingRect(forGlyphRange: glyphRange, in: textView.textContainer)
+            rect.origin.y += textView.textContainerInset.top
+            let maxY = max(0, textView.contentSize.height - textView.bounds.height)
+            let y = min(max(0, rect.origin.y), maxY)
+            textView.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+        }
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        @Binding var text: String
+        var lastToken: Int = .min
+
+        init(text: Binding<String>) { _text = text }
+
+        func textViewDidChange(_ textView: UITextView) {
+            text = textView.text
+        }
+    }
+}
+#elseif os(macOS)
+private struct MarkdownSourceEditor: NSViewRepresentable {
+    @Binding var text: String
+    var fontSize: Double
+    var scrollRequest: EditorScrollRequest?
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
+        textView.delegate = context.coordinator
+        textView.isRichText = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.drawsBackground = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = NSSize(width: 12, height: 12)
+        textView.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        textView.string = text
+        scrollView.drawsBackground = false
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        if textView.string != text {
+            textView.string = text
+        }
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        if textView.font != font {
+            textView.font = font
+        }
+        applyScroll(to: scrollView, textView: textView, coordinator: context.coordinator)
+    }
+
+    private func applyScroll(to scrollView: NSScrollView, textView: NSTextView, coordinator: Coordinator) {
+        guard let request = scrollRequest, coordinator.lastToken != request.token else { return }
+        coordinator.lastToken = request.token
+        let index = request.characterIndex
+        DispatchQueue.main.async {
+            guard let layoutManager = textView.layoutManager, let container = textView.textContainer else { return }
+            let ns = textView.string as NSString
+            let safe = max(0, min(index, ns.length))
+            layoutManager.ensureLayout(for: container)
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: NSRange(location: safe, length: 0),
+                actualCharacterRange: nil
+            )
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: container)
+            rect.origin.y += textView.textContainerInset.height
+            let clipView = scrollView.contentView
+            let maxY = max(0, textView.bounds.height - clipView.bounds.height)
+            let y = min(max(0, rect.origin.y), maxY)
+            clipView.scroll(to: NSPoint(x: 0, y: y))
+            scrollView.reflectScrolledClipView(clipView)
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        @Binding var text: String
+        var lastToken: Int = .min
+
+        init(text: Binding<String>) { _text = text }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            text = textView.string
+        }
+    }
+}
+#endif
 
 #Preview {
     ContentView()
