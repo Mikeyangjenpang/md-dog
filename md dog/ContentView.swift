@@ -28,6 +28,14 @@ struct ContentView: View {
     @State private var appearanceMode: AppearanceMode = .system
     @State private var fontFamily: FontFamily = .serif
     @State private var isShowingFontStepper = false
+    @State private var isHingeSplit = false
+    @State private var isDuo = false
+    @State private var recentFiles = RecentFilesStore()
+    @State private var isSidebarCollapsed = false
+    @State private var showsSidebarControls = true
+    @State private var sidebarControlsHideTask: Task<Void, Never>?
+    @State private var screenLongSide: CGFloat = 0
+    @State private var isLandscape = false
     @State private var isShowingSettings = false
     @State private var isShowingDonation = false
     @State private var unorderedListColor: ListColor = .mint
@@ -285,24 +293,44 @@ struct ContentView: View {
     }
 
     var body: some View {
+        HingeAdaptiveLayout(isSplit: $isHingeSplit, isDuo: $isDuo) {
+            mainStack
+        } controls: {
+            hingeControlsPanel
+        }
+    }
+
+    private var mainStack: some View {
         NavigationStack {
-            Group {
-                if isEditing {
-                    editorView
-                } else if markdownText.isEmpty {
-                    emptyState
-                } else {
-                    reader
-                }
-            }
+            splitContainer
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(pageBackground.ignoresSafeArea())
-            .navigationTitle(markdownText.isEmpty ? "" : selectedFileName)
-            .navigationSubtitle(markdownText.isEmpty ? "" : fileSummary)
+            .navigationTitle(markdownText.isEmpty || recentSidebarAvailable ? "" : selectedFileName)
+            .navigationSubtitle(markdownText.isEmpty || recentSidebarAvailable ? "" : fileSummary)
             .safeAreaInset(edge: .bottom) {
                 bottomViewModeBar
             }
+            .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: {
+                isLandscape = $0
+            }
+            .onGeometryChange(for: CGFloat.self) {
+                let insets = $0.safeAreaInsets
+                return max($0.size.width + insets.leading + insets.trailing,
+                           $0.size.height + insets.top + insets.bottom)
+            } action: {
+                screenLongSide = $0
+            }
             .toolbar {
+                if showsModeInToolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        modeToolbarButton(.preview)
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        modeToolbarButton(.source)
+                    }
+                    ToolbarSpacer(.fixed, placement: .primaryAction)
+                }
+
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         isShowingFileImporter = true
@@ -446,7 +474,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var bottomViewModeBar: some View {
-        if !markdownText.isEmpty && !isEditing {
+        if !markdownText.isEmpty && !isEditing && !isHingeSplit && !usesToolbarModeSwitch {
             Picker("閱讀模式", selection: $viewMode) {
                 ForEach(ViewMode.allCases) { mode in
                     Text(LocalizedStringKey(mode.rawValue)).tag(mode)
@@ -465,13 +493,274 @@ struct ContentView: View {
         }
     }
 
+    static let isDuoModel: Bool = {
+        var system = utsname()
+        uname(&system)
+        let machine = withUnsafePointer(to: &system.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(_SYS_NAMELEN)) { String(cString: $0) }
+        }
+        let identifier = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? machine
+        return identifier == "iPhone19,4"
+    }()
+
+    /// The cover screen's long side is about 678pt; the unfolded inner screen's is about 951pt.
+    private var isCoverScreen: Bool { screenLongSide > 0 && screenLongSide < 800 }
+
+    /// Inner screen, landscape: recent files fill exactly the left half.
+    private var recentSidebarAvailable: Bool {
+        Self.isDuoModel && !isCoverScreen && isLandscape && !isHingeSplit
+    }
+
+    private var showsRecentSidebar: Bool {
+        recentSidebarAvailable && !isSidebarCollapsed
+    }
+
+    @ViewBuilder
+    private var splitContainer: some View {
+        Group {
+            if showsRecentSidebar {
+                GeometryReader { proxy in
+                    // Split at the middle of the whole screen (where the hinge is),
+                    // not of the area left after the reserved strip.
+                    let insets = proxy.safeAreaInsets
+                    let screenWidth = proxy.size.width + insets.leading + insets.trailing
+                    let sidebarWidth = max(screenWidth / 2 - insets.leading, 0)
+                    HStack(spacing: 0) {
+                        recentFilesSidebar
+                            .frame(width: sidebarWidth)
+                            .simultaneousGesture(sidebarSwipe(opens: false))
+                        mainContent
+                            .overlay(alignment: .topLeading) {
+                                floatingDocumentHeader(leading: 12)
+                            }
+                            .frame(width: max(proxy.size.width - sidebarWidth, 0))
+                    }
+                }
+            } else {
+                mainContent
+                    .overlay(alignment: .topLeading) {
+                        if recentSidebarAvailable {
+                            floatingDocumentHeader(leading: 52)
+                        }
+                    }
+                    .overlay(alignment: .leading) {
+                        if recentSidebarAvailable {
+                            // Right swipe from the left edge opens the sidebar.
+                            Color.clear
+                                .frame(width: 24)
+                                .contentShape(Rectangle())
+                                .gesture(sidebarSwipe(opens: true))
+                        }
+                    }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if recentSidebarAvailable {
+                sidebarToggleButton
+            }
+        }
+    }
+
+    /// One button for both states, always at the left edge of the screen.
+    private var sidebarToggleButton: some View {
+        // Only the "open" state fades; while the sidebar is shown, the close button stays.
+        let visible = !isSidebarCollapsed || showsSidebarControls
+        return Button {
+            setSidebarCollapsed(!isSidebarCollapsed)
+        } label: {
+            Image(systemName: isSidebarCollapsed ? "chevron.right" : "chevron.left")
+                .font(.body.weight(.semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .background(.regularMaterial, in: .circle)
+        .accessibilityLabel(Text(isSidebarCollapsed ? "展開最近項目" : "收起最近項目"))
+        .opacity(visible ? 1 : 0)
+        .animation(.easeInOut(duration: 0.25), value: visible)
+        .allowsHitTesting(visible)
+    }
+
+    /// Fades with the other floating controls so it doesn't linger over the text.
+    private func floatingDocumentHeader(leading: CGFloat) -> some View {
+        documentHeader(leading: leading)
+            .fixedSize()
+            .background(.regularMaterial, in: .rect(cornerRadius: 12))
+            .opacity(showsSidebarControls ? 1 : 0)
+            .animation(.easeInOut(duration: 0.25), value: showsSidebarControls)
+            .allowsHitTesting(false)
+    }
+
+    private func sidebarSwipe(opens: Bool) -> some Gesture {
+        DragGesture(minimumDistance: 30)
+            .onEnded { value in
+                let dx = value.translation.width
+                guard abs(dx) > abs(value.translation.height) * 1.5 else { return }
+                if opens, dx > 60 {
+                    setSidebarCollapsed(false)
+                } else if !opens, dx < -60 {
+                    setSidebarCollapsed(true)
+                }
+            }
+    }
+
+    /// File name and counts, shown above the reader when the sidebar owns the left half.
+    @ViewBuilder
+    private func documentHeader(leading: CGFloat) -> some View {
+        if !markdownText.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(selectedFileName)
+                    .font(.title2.bold())
+                    .lineLimit(1)
+                Text(fileSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, leading)
+            .padding(.trailing, 20)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private var mainContent: some View {
+        Group {
+            if isEditing {
+                editorView
+            } else if markdownText.isEmpty {
+                emptyState
+            } else {
+                reader
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var recentFilesSidebar: some View {
+        List {
+            Section {
+                if recentFiles.files.isEmpty {
+                    Text("尚無最近開啟的檔案")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(recentFiles.files) { file in
+                        Button {
+                            openRecent(file)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(file.name)
+                                    .lineLimit(1)
+                                Text(file.lastOpened, format: .relative(presentation: .named))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(file.name == selectedFileName ? Color.accentColor.opacity(0.15) : nil)
+                        .swipeActions {
+                            Button("移除", role: .destructive) {
+                                recentFiles.remove(file)
+                            }
+                        }
+                    }
+                }
+            } header: {
+                // Leaves room for the toggle button at the screen's left edge.
+                Text("最近項目")
+                    .padding(.leading, 40)
+            }
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+    }
+
+    private func viewModeIcon(_ mode: ViewMode) -> String {
+        switch mode {
+        case .preview: "doc.richtext"
+        case .source: "chevron.left.forwardslash.chevron.right"
+        }
+    }
+
+    /// On the cover screen and on the inner screen in landscape, the mode
+    /// switcher lives in the system toolbar so it sits in the reserved strip
+    /// and the system keeps it clear of the camera.
+    private var usesToolbarModeSwitch: Bool {
+        Self.isDuoModel && (isCoverScreen || isLandscape)
+    }
+
+    private var showsModeInToolbar: Bool {
+        usesToolbarModeSwitch && !isHingeSplit && !markdownText.isEmpty && !isEditing
+    }
+
+    @ViewBuilder
+    private func modeToolbarButton(_ mode: ViewMode) -> some View {
+        let button = Button {
+            viewMode = mode
+        } label: {
+            Label(LocalizedStringKey(mode.rawValue), systemImage: viewModeIcon(mode))
+                .labelStyle(.iconOnly)
+        }
+        .accessibilityAddTraits(viewMode == mode ? .isSelected : [])
+
+        if viewMode == mode {
+            button.buttonStyle(.borderedProminent)
+        } else {
+            button
+        }
+    }
+
+    /// Shown on the secondary panel while an iPhone Duo is half-folded.
+    private var hingeControlsPanel: some View {
+        VStack(spacing: 16) {
+            Picker("閱讀模式", selection: $viewMode) {
+                ForEach(ViewMode.allCases) { mode in
+                    Text(LocalizedStringKey(mode.rawValue)).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(markdownText.isEmpty || isEditing)
+
+            fontControlsPopover
+        }
+        .padding()
+        .frame(maxWidth: 420, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        .background(pageBackground.ignoresSafeArea())
+        .preferredColorScheme(appearanceMode.colorScheme)
+    }
+
+    /// The reader is rebuilt when the layout switches, and its `onDisappear` cancels the
+    /// hide timer, so the controls are revealed again only after the swap settles.
+    private func setSidebarCollapsed(_ collapsed: Bool) {
+        withAnimation { isSidebarCollapsed = collapsed }
+        revealSidebarControlsAndScheduleHide()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            revealBottomBarAndScheduleHide()
+        }
+    }
+
+    /// The sidebar button and file info use their own timer: the reader that owns
+    /// `bottomBarHideTask` is rebuilt when the layout switches and cancels it.
+    private func revealSidebarControlsAndScheduleHide() {
+        showsSidebarControls = true
+        sidebarControlsHideTask?.cancel()
+        sidebarControlsHideTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            showsSidebarControls = false
+        }
+    }
+
     private func revealBottomBarAndScheduleHide() {
+        revealSidebarControlsAndScheduleHide()
         if !isBottomBarVisible {
             isBottomBarVisible = true
         }
         bottomBarHideTask?.cancel()
         bottomBarHideTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             isBottomBarVisible = false
         }
@@ -920,6 +1209,23 @@ struct ContentView: View {
             // Remember the user-selected file so edits can be saved back to it.
             currentFileURL = url
             isEditing = false
+            recentFiles.record(url)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func openRecent(_ file: RecentFile) {
+        guard let url = recentFiles.url(for: file) else {
+            recentFiles.remove(file)
+            errorMessage = String(localized: "找不到這個檔案，已從最近項目移除。")
+            return
+        }
+        do {
+            try loadMarkdownFile(from: url)
+            currentFileURL = url
+            isEditing = false
+            recentFiles.record(url)
         } catch {
             errorMessage = error.localizedDescription
         }
