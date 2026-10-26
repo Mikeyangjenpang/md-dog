@@ -305,8 +305,8 @@ struct ContentView: View {
             splitContainer
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(pageBackground.ignoresSafeArea())
-            .navigationTitle(markdownText.isEmpty || recentSidebarAvailable ? "" : selectedFileName)
-            .navigationSubtitle(markdownText.isEmpty || recentSidebarAvailable ? "" : fileSummary)
+            .navigationTitle(markdownText.isEmpty || usesFloatingDocumentInfo ? "" : selectedFileName)
+            .navigationSubtitle(markdownText.isEmpty || usesFloatingDocumentInfo ? "" : fileSummary)
             .safeAreaInset(edge: .bottom) {
                 bottomViewModeBar
             }
@@ -367,9 +367,16 @@ struct ContentView: View {
                         Button {
                             saveMarkdownToFile()
                         } label: {
-                            Label(didJustSave ? "已儲存" : "儲存",
-                                  systemImage: didJustSave ? "checkmark" : "square.and.arrow.down")
-                                .contentTransition(.symbolEffect(.replace))
+                            Label {
+                                Text(didJustSave ? "已儲存" : "儲存")
+                            } icon: {
+                                if didJustSave {
+                                    Image(systemName: "checkmark")
+                                } else {
+                                    Image("SaveDisk")
+                                        .renderingMode(.template)
+                                }
+                            }
                         }
                         .disabled(currentFileURL == nil)
                     }
@@ -507,6 +514,12 @@ struct ContentView: View {
     private var isCoverScreen: Bool { screenLongSide > 0 && screenLongSide < 800 }
 
     /// Inner screen, landscape: recent files fill exactly the left half.
+    /// File name and counts float and fade the same way on the cover screen and the
+    /// inner screen in landscape; inner portrait keeps the navigation title.
+    private var usesFloatingDocumentInfo: Bool {
+        recentSidebarAvailable || (Self.isDuoModel && isCoverScreen && !isHingeSplit)
+    }
+
     private var recentSidebarAvailable: Bool {
         Self.isDuoModel && !isCoverScreen && isLandscape && !isHingeSplit
     }
@@ -539,8 +552,8 @@ struct ContentView: View {
             } else {
                 mainContent
                     .overlay(alignment: .topLeading) {
-                        if recentSidebarAvailable {
-                            floatingDocumentHeader(leading: 52)
+                        if usesFloatingDocumentInfo && !recentSidebarAvailable {
+                            floatingDocumentHeader(leading: 12)
                         }
                     }
                     .overlay(alignment: .leading) {
@@ -561,23 +574,44 @@ struct ContentView: View {
         }
     }
 
-    /// One button for both states, always at the left edge of the screen.
+    /// Shared height so the chevron and the file info centre on the same line.
+    private static let infoRowHeight: CGFloat = 60
+
+    /// Open: a bare `<` at the left edge that stays put. Closed: the whole file
+    /// info panel, chevron included, is the button that opens the sidebar.
+    @ViewBuilder
     private var sidebarToggleButton: some View {
-        // Only the "open" state fades; while the sidebar is shown, the close button stays.
-        let visible = !isSidebarCollapsed || showsSidebarControls
-        return Button {
-            setSidebarCollapsed(!isSidebarCollapsed)
-        } label: {
-            Image(systemName: isSidebarCollapsed ? "chevron.right" : "chevron.left")
-                .font(.body.weight(.semibold))
-                .frame(width: 44, height: 44)
+        if isSidebarCollapsed {
+            Button {
+                setSidebarCollapsed(false)
+            } label: {
+                HStack(spacing: 0) {
+                    Image(systemName: "chevron.right")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 44, height: Self.infoRowHeight)
+                    documentHeader(leading: 0)
+                }
+                .fixedSize()
+                .background(.regularMaterial, in: .rect(cornerRadius: 12))
                 .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("展開最近項目"))
+            .opacity(showsSidebarControls ? 1 : 0)
+            .animation(.easeInOut(duration: 0.25), value: showsSidebarControls)
+            .allowsHitTesting(showsSidebarControls)
+        } else {
+            Button {
+                setSidebarCollapsed(true)
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 44, height: Self.infoRowHeight)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel(Text("收起最近項目"))
         }
-        .background(.regularMaterial, in: .circle)
-        .accessibilityLabel(Text(isSidebarCollapsed ? "展開最近項目" : "收起最近項目"))
-        .opacity(visible ? 1 : 0)
-        .animation(.easeInOut(duration: 0.25), value: visible)
-        .allowsHitTesting(visible)
     }
 
     /// Fades with the other floating controls so it doesn't linger over the text.
@@ -615,10 +649,9 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: Self.infoRowHeight, maxHeight: Self.infoRowHeight, alignment: .leading)
             .padding(.leading, leading)
             .padding(.trailing, 20)
-            .padding(.vertical, 8)
         }
     }
 
